@@ -68,6 +68,963 @@ eslint.config.mjs
 nest-cli.json
 package.json
 README.md
+repomix-output-b.xml
+tsconfig.build.json
+tsconfig.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="prisma/schema.prisma">
+// backend/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String?  
+  email        String   @unique
+  password     String
+  phone        String?  
+  dob          String?  
+  address      String?  
+  gender       String?  
+  avatarUrl    String?  @db.LongText  
+  isFirstLogin Boolean  @default(true) 
+  role         String   @default("User")
+  status       String   @default("Active")
+  createdAt    DateTime @default(now())
+}
+
+model Company {
+  id            Int      @id @default(autoincrement())
+  
+  companyCode   String   @unique @map("company_code") 
+  name          String   @map("company_name")         
+  level         Int      
+  country       String?  
+  city          String?  
+  foundedYear   Int?     @map("founded_year")         
+  annualRevenue BigInt?  @map("annual_revenue")       
+  employees     Int?     
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  // 👉 新增核心：用于体现 relationship 的自关联字段
+  parentId      Int?     @map("parent_id")
+  parent        Company? @relation("CompanyHierarchy", fields: [parentId], references: [id])
+  children      Company[] @relation("CompanyHierarchy")
+
+  @@map("companies")
+}
+</file>
+
+<file path="prisma/seed.ts">
+// backend/prisma/seed.ts
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+// --- 辅助工具函数 ---
+const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+const generateCode = () => 'COMP-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+
+const locationMap: Record<string, string[]> = {
+  'Canada': ['Calgary', 'Hamilton', 'Montreal', 'Ottawa', 'Winnipeg'],
+  'China': ['Beijing', 'Guangzhou', 'Hangzhou', 'Nanjing', 'Shanghai', 'Shenzhen', 'Tianjin'],
+  'France': ['Bordeaux', 'Lille', 'Lyon', 'Marseille', 'Montpellier', 'Nantes', 'Nice', 'Toulouse'],
+  'Germany': ['Berlin', 'Cologne', 'Dortmund', 'Essen', 'Frankfurt', 'Leipzig', 'Munich', 'Stuttgart'],
+  'India': ['Bangalore', 'Delhi', 'Hyderabad', 'Jaipur'],
+  'Japan': ['Fukuoka', 'Kawasaki', 'Kobe', 'Nagoya', 'Osaka', 'Saitama', 'Sapporo', 'Tokyo', 'Yokohama'],
+  'UK': ['Birmingham', 'Bristol', 'Cardiff', 'Edinburgh', 'Liverpool', 'London', 'Manchester', 'Sheffield'],
+  'USA': ['Chicago', 'Dallas', 'Houston', 'Los Angeles', 'Philadelphia', 'San Jose']
+};
+const countries = Object.keys(locationMap);
+const prefixes = ['Global', 'Tech', 'Eco', 'Smart', 'Future', 'Cyber', 'Nano', 'Green', 'Data', 'Cloud'];
+const suffixes = ['Corp', 'Inc', 'Ltd', 'Group', 'Systems', 'Solutions', 'Logistics', 'Holdings'];
+
+const generateName = (level: number, index: number) => `${pick(prefixes)} ${pick(suffixes)} L${level}-${index}`;
+
+// --- 递归插入数据的核心逻辑 ---
+async function seedLevel(parentId: number, currentDepth: number, maxDepth: number) {
+  if (currentDepth > maxDepth) return;
+
+  const numChildren = randomInt(3, 6); 
+  for (let i = 1; i <= numChildren; i++) {
+    const country = pick(countries);
+    const city = pick(locationMap[country]);
+    const baseRevenue = 1000 / currentDepth; 
+    const revenueVal = randomInt(baseRevenue * 0.5, baseRevenue * 1.5) * 1000000; // 转换成真实的金额数字
+
+    // 1. 插入当前子节点
+    const newCompany = await prisma.company.create({
+      data: {
+        companyCode: generateCode(),
+        name: generateName(currentDepth, i),
+        level: currentDepth,
+        country: country,
+        city: city,
+        foundedYear: randomInt(1990, 2024),
+        annualRevenue: BigInt(Math.round(revenueVal)), // 注意：数据库是 BigInt，必须转换
+        employees: randomInt(50, 5000) * (4 - currentDepth),
+        parentId: parentId, // 👉 核心：关联父节点的 ID
+      }
+    });
+
+    // 2. 递归：如果还没到底层，继续以当前节点为父节点往下生成
+    if (currentDepth < maxDepth) {
+      await seedLevel(newCompany.id, currentDepth + 1, maxDepth);
+    }
+  }
+}
+
+// --- 主执行函数 ---
+async function main() {
+  console.log('🧹 清理旧的公司数据...');
+  await prisma.company.deleteMany({});
+
+  console.log('🌱 开始播种 Root 节点 (Level 1)...');
+  const roots = [
+    { name: "Alpha Holdings (L1)", country: "USA", city: "Chicago", year: 1995, rev: 5200000000, emp: 45000 },
+    { name: "Beta Logistics (L1)", country: "China", city: "Shanghai", year: 2008, rev: 3800000000, emp: 32000 },
+    { name: "Gamma Systems (L1)", country: "Germany", city: "Berlin", year: 2001, rev: 4500000000, emp: 28000 }
+  ];
+
+  for (const root of roots) {
+    const rootNode = await prisma.company.create({
+      data: {
+        companyCode: generateCode(),
+        name: root.name,
+        level: 1,
+        country: root.country,
+        city: root.city,
+        foundedYear: root.year,
+        annualRevenue: BigInt(root.rev),
+        employees: root.emp,
+        parentId: null // 顶层节点没有父节点
+      }
+    });
+    
+    console.log(`正在为 ${root.name} 生成子网络...`);
+    // 生成 Level 2 和 Level 3
+    await seedLevel(rootNode.id, 2, 3);
+  }
+  
+  console.log('✅ 数据播种完成！所有层级关系已持久化到数据库。');
+}
+
+main()
+  .catch(e => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+</file>
+
+<file path="src/prisma/prisma.module.ts">
+// backend/src/prisma/prisma.module.ts
+import { Global, Module } from '@nestjs/common';
+import { PrismaService } from './prisma.service';
+
+@Global() // 设为全局模块，其他模块不需要重复 import
+@Module({
+  providers: [PrismaService],
+  exports: [PrismaService], // 暴露给其他模块使用
+})
+export class PrismaModule {}
+</file>
+
+<file path="src/prisma/prisma.service.spec.ts">
+import { Test, TestingModule } from '@nestjs/testing';
+import { PrismaService } from './prisma.service';
+
+describe('PrismaService', () => {
+  let service: PrismaService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [PrismaService],
+    }).compile();
+
+    service = module.get<PrismaService>(PrismaService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+});
+</file>
+
+<file path="src/prisma/prisma.service.ts">
+// backend/src/prisma/prisma.service.ts
+import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+
+@Injectable()
+export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+  async onModuleInit() {
+    await this.$connect();
+  }
+
+  async onModuleDestroy() {
+    await this.$disconnect();
+  }
+}
+</file>
+
+<file path="src/users/users.controller.spec.ts">
+import { Test, TestingModule } from '@nestjs/testing';
+import { UsersController } from './users.controller';
+
+describe('UsersController', () => {
+  let controller: UsersController;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      controllers: [UsersController],
+    }).compile();
+
+    controller = module.get<UsersController>(UsersController);
+  });
+
+  it('should be defined', () => {
+    expect(controller).toBeDefined();
+  });
+});
+</file>
+
+<file path="src/users/users.controller.ts">
+// backend/src/users/users.controller.ts
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, Req } from '@nestjs/common';
+import { UsersService } from './users.service';
+import type { Request } from 'express'; // 👉 这里加上了 type 关键字
+
+@Controller('api/users') // 定义路由前缀为 http://localhost:3001/api/users
+export class UsersController {
+  constructor(private readonly usersService: UsersService) {}
+
+  // 获取所有角色列表：GET /api/users/roles
+  @Get('roles')
+  async getRoles() {
+    return this.usersService.getRoles();
+  }
+
+  // 获取用户列表：GET /api/users
+  @Get()
+  async findAll(@Query() query: any, @Req() req: Request) {
+    const userId = req.cookies['userId']; // 从 Cookie 中抓取 userId
+    return this.usersService.findAll(query, userId);
+  }
+
+  // 创建用户：POST /api/users
+  @Post()
+  async create(@Body() createData: any, @Req() req: Request) {
+    const userId = req.cookies['userId'];
+    return this.usersService.create(createData, userId);
+  }
+
+  // 更新用户：PUT /api/users/:id
+  @Put(':id')
+  async update(@Param('id') id: string, @Body() updateData: any, @Req() req: Request) {
+    const userId = req.cookies['userId'];
+    return this.usersService.update(+id, updateData, userId);
+  }
+
+  // 删除单个用户：DELETE /api/users/:id
+  @Delete(':id')
+  async remove(@Param('id') id: string, @Req() req: Request) {
+    const userId = req.cookies['userId'];
+    return this.usersService.remove(+id, userId);
+  }
+}
+</file>
+
+<file path="src/users/users.module.ts">
+import { Module } from '@nestjs/common';
+import { UsersService } from './users.service';
+import { UsersController } from './users.controller';
+
+@Module({
+  providers: [UsersService],
+  controllers: [UsersController]
+})
+export class UsersModule {}
+</file>
+
+<file path="src/users/users.service.spec.ts">
+import { Test, TestingModule } from '@nestjs/testing';
+import { UsersService } from './users.service';
+
+describe('UsersService', () => {
+  let service: UsersService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [UsersService],
+    }).compile();
+
+    service = module.get<UsersService>(UsersService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+});
+</file>
+
+<file path="src/users/users.service.ts">
+// backend/src/users/users.service.ts
+import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
+
+@Injectable()
+export class UsersService {
+  constructor(private prisma: PrismaService) {}
+
+  // 内部鉴权辅助方法：获取当前操作者
+  async getCurrentUser(userIdStr?: string) {
+    if (!userIdStr) return null;
+    const userId = parseInt(userIdStr, 10);
+    if (isNaN(userId)) return null;
+    return this.prisma.user.findUnique({ where: { id: userId } });
+  }
+
+  // 1. 获取用户列表
+  async findAll(query: any, userIdStr?: string) {
+    const currentUser = await this.getCurrentUser(userIdStr);
+    if (!currentUser) return { success: false, data: [], total: 0 };
+
+    const page = parseInt(query.page) || 1;
+    const pageSize = parseInt(query.pageSize) || 10;
+    const search = query.search;
+    const roles = query.roles ? query.roles.split(',') : [];
+
+    const where: Prisma.UserWhereInput = {};
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search } },
+        { email: { contains: search } },
+      ];
+    }
+    if (roles.length > 0) {
+      where.role = { in: roles };
+    }
+
+    const total = await this.prisma.user.count({ where });
+    const users = await this.prisma.user.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      select: {
+        id: true, name: true, email: true, role: true,
+        status: true, phone: true, createdAt: true,
+      },
+    });
+
+    return { success: true, data: users, total };
+  }
+
+  // 2. 创建用户
+  async create(data: any, userIdStr?: string) {
+    const currentUser = await this.getCurrentUser(userIdStr);
+    if (!currentUser) return { success: false, error: '未登录' };
+    if (currentUser.role === 'User') return { success: false, error: '越权操作：权限不足' };
+
+    let assignedRole = data.role;
+    if (currentUser.role === 'Manager') {
+      assignedRole = 'User';
+    }
+
+    try {
+      await this.prisma.user.create({
+        data: {
+          name: data.name,
+          email: data.email,
+          role: assignedRole,
+          status: data.status,
+          password: data.password || '123456',
+        },
+      });
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: '用户创建失败，邮箱或昵称可能已被使用。' };
+    }
+  }
+
+  // 3. 更新用户
+  async update(id: number, data: any, userIdStr?: string) {
+    const currentUser = await this.getCurrentUser(userIdStr);
+    if (!currentUser) return { success: false, error: '未登录' };
+    if (currentUser.role === 'User') return { success: false, error: '越权操作：权限不足' };
+
+    const targetUser = await this.prisma.user.findUnique({ where: { id } });
+    if (!targetUser) return { success: false, error: '目标用户不存在' };
+
+    if (currentUser.role === 'Manager') {
+      if (targetUser.role !== 'User') return { success: false, error: '越权操作：Manager只能编辑User' };
+      if (data.role) delete data.role;
+    }
+
+    if (currentUser.role === 'Admin' && targetUser.role === 'Admin' && targetUser.id !== currentUser.id) {
+      return { success: false, error: '操作拒绝：不可修改其他Admin的信息' };
+    }
+
+    try {
+      await this.prisma.user.update({
+        where: { id },
+        data,
+      });
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: '更新失败，邮箱或昵称可能冲突' };
+    }
+  }
+
+  // 4. 删除单个用户
+  async remove(id: number, userIdStr?: string) {
+    const currentUser = await this.getCurrentUser(userIdStr);
+    if (!currentUser) return { success: false, error: '未登录' };
+    if (currentUser.role === 'User') return { success: false, error: '越权操作：权限不足' };
+
+    const targetUser = await this.prisma.user.findUnique({ where: { id } });
+    if (!targetUser) return { success: false, error: '目标用户不存在' };
+
+    if (currentUser.role === 'Manager' && targetUser.role !== 'User') {
+      return { success: false, error: '越权操作：Manager只能删除User' };
+    }
+
+    if (currentUser.role === 'Admin' && targetUser.role === 'Admin') {
+      return { success: false, error: '操作拒绝：不可删除Admin级别账号' };
+    }
+
+    await this.prisma.user.delete({ where: { id } });
+    return { success: true };
+  }
+
+  // 5. 获取角色列表
+  async getRoles() {
+    try {
+      const groups = await this.prisma.user.groupBy({
+        by: ['role'],
+        orderBy: { role: 'asc' },
+      });
+      return groups.map((g) => g.role);
+    } catch (error) {
+      return [];
+    }
+  }
+}
+</file>
+
+<file path="src/app.controller.spec.ts">
+import { Test, TestingModule } from '@nestjs/testing';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+
+describe('AppController', () => {
+  let appController: AppController;
+
+  beforeEach(async () => {
+    const app: TestingModule = await Test.createTestingModule({
+      controllers: [AppController],
+      providers: [AppService],
+    }).compile();
+
+    appController = app.get<AppController>(AppController);
+  });
+
+  describe('root', () => {
+    it('should return "Hello World!"', () => {
+      expect(appController.getHello()).toBe('Hello World!');
+    });
+  });
+});
+</file>
+
+<file path="src/app.controller.ts">
+import { Controller, Get } from '@nestjs/common';
+import { AppService } from './app.service';
+
+@Controller()
+export class AppController {
+  constructor(private readonly appService: AppService) {}
+
+  @Get()
+  getHello(): string {
+    return this.appService.getHello();
+  }
+}
+</file>
+
+<file path="src/app.module.ts">
+import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { PrismaModule } from './prisma/prisma.module';
+import { UsersModule } from './users/users.module';
+
+@Module({
+  imports: [PrismaModule, UsersModule],
+  controllers: [AppController],
+  providers: [AppService],
+})
+export class AppModule {}
+</file>
+
+<file path="src/app.service.ts">
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class AppService {
+  getHello(): string {
+    return 'Hello World!';
+  }
+}
+</file>
+
+<file path="src/main.ts">
+// backend/src/main.ts
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import cookieParser from 'cookie-parser'; // 👉 修改了这里
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  // 启用 cookie 解析
+  app.use(cookieParser());
+
+  // 配置 CORS，允许前端 (localhost:3000) 访问并携带 Cookie
+  app.enableCors({
+    origin: ['http://localhost:3000'],
+    credentials: true,
+  });
+
+  await app.listen(3001);
+}
+bootstrap();
+</file>
+
+<file path="test/app.e2e-spec.ts">
+import { Test, TestingModule } from '@nestjs/testing';
+import { INestApplication } from '@nestjs/common';
+import request from 'supertest';
+import { App } from 'supertest/types';
+import { AppModule } from './../src/app.module';
+
+describe('AppController (e2e)', () => {
+  let app: INestApplication<App>;
+
+  beforeEach(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    await app.init();
+  });
+
+  it('/ (GET)', () => {
+    return request(app.getHttpServer())
+      .get('/')
+      .expect(200)
+      .expect('Hello World!');
+  });
+});
+</file>
+
+<file path="test/jest-e2e.json">
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": ".",
+  "testEnvironment": "node",
+  "testRegex": ".e2e-spec.ts$",
+  "transform": {
+    "^.+\\.(t|j)s$": "ts-jest"
+  }
+}
+</file>
+
+<file path=".gitignore">
+# compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+/generated/prisma
+</file>
+
+<file path=".prettierrc">
+{
+  "singleQuote": true,
+  "trailingComma": "all"
+}
+</file>
+
+<file path="eslint.config.mjs">
+// @ts-check
+import eslint from '@eslint/js';
+import eslintPluginPrettierRecommended from 'eslint-plugin-prettier/recommended';
+import globals from 'globals';
+import tseslint from 'typescript-eslint';
+
+export default tseslint.config(
+  {
+    ignores: ['eslint.config.mjs'],
+  },
+  eslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
+  eslintPluginPrettierRecommended,
+  {
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        ...globals.jest,
+      },
+      sourceType: 'commonjs',
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+  {
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-floating-promises': 'warn',
+      '@typescript-eslint/no-unsafe-argument': 'warn',
+      "prettier/prettier": ["error", { endOfLine: "auto" }],
+    },
+  },
+);
+</file>
+
+<file path="nest-cli.json">
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "src",
+  "compilerOptions": {
+    "deleteOutDir": true
+  }
+}
+</file>
+
+<file path="package.json">
+{
+  "name": "backend",
+  "version": "0.0.1",
+  "description": "",
+  "author": "",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:e2e": "jest --config ./test/jest-e2e.json"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/platform-express": "^11.0.1",
+    "@prisma/client": "^6.19.1",
+    "cookie-parser": "^1.4.7",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.2.0",
+    "@eslint/js": "^9.18.0",
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/schematics": "^11.0.0",
+    "@nestjs/testing": "^11.0.1",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.10.7",
+    "@types/supertest": "^6.0.2",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^10.0.1",
+    "eslint-plugin-prettier": "^5.2.2",
+    "globals": "^16.0.0",
+    "jest": "^30.0.0",
+    "prettier": "^3.4.2",
+    "prisma": "^6.19.1",
+    "source-map-support": "^0.5.21",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.2.5",
+    "ts-loader": "^9.5.2",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  }
+}
+</file>
+
+<file path="README.md">
+<p align="center">
+  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
+</p>
+
+[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
+[circleci-url]: https://circleci.com/gh/nestjs/nest
+
+  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
+    <p align="center">
+<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
+<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
+<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
+<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
+<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
+<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
+<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
+  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
+    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
+  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
+</p>
+  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
+  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+
+## Description
+
+[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+
+## Project setup
+
+```bash
+$ pnpm install
+```
+
+## Compile and run the project
+
+```bash
+# development
+$ pnpm run start
+
+# watch mode
+$ pnpm run start:dev
+
+# production mode
+$ pnpm run start:prod
+```
+
+## Run tests
+
+```bash
+# unit tests
+$ pnpm run test
+
+# e2e tests
+$ pnpm run test:e2e
+
+# test coverage
+$ pnpm run test:cov
+```
+
+## Deployment
+
+When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+
+If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+
+```bash
+$ pnpm install -g @nestjs/mau
+$ mau deploy
+```
+
+With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+
+## Resources
+
+Check out a few resources that may come in handy when working with NestJS:
+
+- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
+- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
+- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
+- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
+- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
+- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
+- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
+- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+
+## Support
+
+Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+
+## Stay in touch
+
+- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
+- Website - [https://nestjs.com](https://nestjs.com/)
+- Twitter - [@nestframework](https://twitter.com/nestframework)
+
+## License
+
+Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+</file>
+
+<file path="repomix-output-b.xml">
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+prisma/
+  schema.prisma
+  seed.ts
+src/
+  prisma/
+    prisma.module.ts
+    prisma.service.spec.ts
+    prisma.service.ts
+  users/
+    users.controller.spec.ts
+    users.controller.ts
+    users.module.ts
+    users.service.spec.ts
+    users.service.ts
+  app.controller.spec.ts
+  app.controller.ts
+  app.module.ts
+  app.service.ts
+  main.ts
+test/
+  app.e2e-spec.ts
+  jest-e2e.json
+.gitignore
+.prettierrc
+eslint.config.mjs
+nest-cli.json
+package.json
+README.md
 tsconfig.build.json
 tsconfig.json
 </directory_structure>
@@ -954,6 +1911,44 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+</file>
+
+<file path="tsconfig.build.json">
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+}
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "resolvePackageJsonExports": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strictNullChecks": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitAny": false,
+    "strictBindCallApply": false,
+    "noFallthroughCasesInSwitch": false
+  }
+}
+</file>
+
+</files>
 </file>
 
 <file path="tsconfig.build.json">
