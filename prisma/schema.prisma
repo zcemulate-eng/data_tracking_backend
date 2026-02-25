@@ -1,0 +1,47 @@
+// backend/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String?  
+  email        String   @unique
+  password     String
+  phone        String?  
+  dob          String?  
+  address      String?  
+  gender       String?  
+  avatarUrl    String?  @db.LongText  
+  isFirstLogin Boolean  @default(true) 
+  role         String   @default("User")
+  status       String   @default("Active")
+  createdAt    DateTime @default(now())
+}
+
+model Company {
+  id            Int      @id @default(autoincrement())
+  
+  companyCode   String   @unique @map("company_code") 
+  name          String   @map("company_name")         
+  level         Int      
+  country       String?  
+  city          String?  
+  foundedYear   Int?     @map("founded_year")         
+  annualRevenue BigInt?  @map("annual_revenue")       
+  employees     Int?     
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  // 👉 新增核心：用于体现 relationship 的自关联字段
+  parentId      Int?     @map("parent_id")
+  parent        Company? @relation("CompanyHierarchy", fields: [parentId], references: [id])
+  children      Company[] @relation("CompanyHierarchy")
+
+  @@map("companies")
+}
