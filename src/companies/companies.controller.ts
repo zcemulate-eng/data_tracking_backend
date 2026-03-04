@@ -1,68 +1,75 @@
 // backend/src/companies/companies.controller.ts
 import { Controller, Get, Post, Put, Delete, Body, Param, Query, Req } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiCookieAuth } from '@nestjs/swagger';
 import { CompaniesService } from './companies.service';
 import type { Request } from 'express';
+import { CompanyQueryDto, CreateCompanyDto, UpdateCompanyDto, AnalyticsPayloadDto } from './companies.dto';
 
+@ApiTags('Companies 数据与图表分析模块')
 @Controller('api/companies')
 export class CompaniesController {
     constructor(private readonly companiesService: CompaniesService) { }
 
-    // 获取所有层级选项：GET /api/companies/levels
-    // 注意：这个路由必须放在 /:id 前面，否则会被误认为是 id='levels'
+    @ApiOperation({ summary: '获取所有公司层级选项 (用于下拉筛选)' })
     @Get('levels')
     async getLevels() {
         return this.companiesService.getLevels();
     }
 
-    // 获取公司列表（带分页和搜索）：GET /api/companies
+    @ApiOperation({ summary: '获取公司基础列表数据 (用于折叠表格展示)' })
     @Get()
-    async findAll(@Query() query: any) {
+    async findAll(@Query() query: CompanyQueryDto) {
         return this.companiesService.findAll(query);
     }
 
-    // 👇 新增：Dashboard 统计接口 (一定要放在 /:id 路由的前面！)
+    @ApiOperation({ summary: '获取 Dashboard 顶部聚合卡片数据' })
     @Get('stats/basic')
     async getDashboardBasicStats() {
         return this.companiesService.getDashboardBasicStats();
     }
 
+    @ApiOperation({ summary: '获取层级分布统计 (用于左侧 Doughnut 饼图)' })
     @Get('stats/levels')
     async getLevelStats() {
         return this.companiesService.getLevelStats();
     }
 
+    @ApiOperation({ summary: '获取供应链历年增长趋势 (用于右侧折线图)' })
     @Get('stats/growth')
     async getGrowthStats() {
         return this.companiesService.getGrowthStats();
     }
 
-    // 获取过滤器下拉选项
+    @ApiOperation({ summary: '获取多维分析的级联过滤选项 (国家/城市映射)' })
     @Get('filters')
     async getFilterOptions() {
         return this.companiesService.getFilterOptions();
     }
 
-    // 强大的多维分析引擎接口
+    @ApiOperation({ summary: '核心引擎：获取动态分析数据 (同时返回 Bar 与 Bubble Tree)' })
     @Post('analytics')
-    async getAnalyticsData(@Body() payload: { dimension: string; filters: any }) {
+    async getAnalyticsData(@Body() payload: AnalyticsPayloadDto) {
         return this.companiesService.getAnalyticsData(payload);
     }
 
-    // 创建公司：POST /api/companies
+    @ApiOperation({ summary: '新增公司节点' })
+    @ApiCookieAuth()
     @Post()
-    async create(@Body() createData: any, @Req() req: Request) {
-        const userId = req.cookies['userId']; // 从 Cookie 抓取用户身份
+    async create(@Body() createData: CreateCompanyDto, @Req() req: Request) {
+        const userId = req.cookies['userId'];
         return this.companiesService.create(createData, userId);
     }
 
-    // 更新公司：PUT /api/companies/:id
+    @ApiOperation({ summary: '更新公司信息' })
+    @ApiCookieAuth()
     @Put(':id')
-    async update(@Param('id') id: string, @Body() updateData: any, @Req() req: Request) {
+    async update(@Param('id') id: string, @Body() updateData: UpdateCompanyDto, @Req() req: Request) {
         const userId = req.cookies['userId'];
         return this.companiesService.update(+id, updateData, userId);
     }
 
-    // 删除公司：DELETE /api/companies/:id
+    @ApiOperation({ summary: '删除公司节点' })
+    @ApiCookieAuth()
     @Delete(':id')
     async remove(@Param('id') id: string, @Req() req: Request) {
         const userId = req.cookies['userId'];

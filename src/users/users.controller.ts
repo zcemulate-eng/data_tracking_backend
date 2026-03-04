@@ -1,40 +1,47 @@
 // backend/src/users/users.controller.ts
 import { Controller, Get, Post, Put, Delete, Body, Param, Query, Req } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiCookieAuth } from '@nestjs/swagger';
 import { UsersService } from './users.service';
-import type { Request } from 'express'; // 👉 这里加上了 type 关键字
+import type { Request } from 'express';
+import { UserQueryDto, CreateUserDto, UpdateUserDto } from './users.dto';
 
-@Controller('api/users') // 定义路由前缀为 http://localhost:3001/api/users
+@ApiTags('Users 用户管理模块')
+@Controller('api/users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
-  // 获取所有角色列表：GET /api/users/roles
+  @ApiOperation({ summary: '获取所有角色选项 (下拉框使用)' })
   @Get('roles')
   async getRoles() {
     return this.usersService.getRoles();
   }
 
-  // 获取用户列表：GET /api/users
+  @ApiOperation({ summary: '获取用户列表 (支持分页、搜索、过滤)' })
+  @ApiCookieAuth()
   @Get()
-  async findAll(@Query() query: any, @Req() req: Request) {
-    const userId = req.cookies['userId']; // 从 Cookie 中抓取 userId
+  async findAll(@Query() query: UserQueryDto, @Req() req: Request) {
+    const userId = req.cookies['userId'];
     return this.usersService.findAll(query, userId);
   }
 
-  // 创建用户：POST /api/users
+  @ApiOperation({ summary: '创建新用户' })
+  @ApiCookieAuth()
   @Post()
-  async create(@Body() createData: any, @Req() req: Request) {
+  async create(@Body() createData: CreateUserDto, @Req() req: Request) {
     const userId = req.cookies['userId'];
     return this.usersService.create(createData, userId);
   }
 
-  // 更新用户：PUT /api/users/:id
+  @ApiOperation({ summary: '更新用户信息' })
+  @ApiCookieAuth()
   @Put(':id')
-  async update(@Param('id') id: string, @Body() updateData: any, @Req() req: Request) {
+  async update(@Param('id') id: string, @Body() updateData: UpdateUserDto, @Req() req: Request) {
     const userId = req.cookies['userId'];
     return this.usersService.update(+id, updateData, userId);
   }
 
-  // 删除单个用户：DELETE /api/users/:id
+  @ApiOperation({ summary: '删除用户' })
+  @ApiCookieAuth()
   @Delete(':id')
   async remove(@Param('id') id: string, @Req() req: Request) {
     const userId = req.cookies['userId'];
