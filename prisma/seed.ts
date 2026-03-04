@@ -1,100 +1,86 @@
-// backend/prisma/seed.ts
+// prisma/seed.ts
 import { PrismaClient } from '@prisma/client';
+import * as fs from 'fs';
+import * as path from 'path';
+import { parse } from 'csv-parse/sync';
 
 const prisma = new PrismaClient();
 
-// --- 辅助工具函数 ---
-const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
-const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
-const generateCode = () => 'COMP-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-
-const locationMap: Record<string, string[]> = {
-  'Canada': ['Calgary', 'Hamilton', 'Montreal', 'Ottawa', 'Winnipeg'],
-  'China': ['Beijing', 'Guangzhou', 'Hangzhou', 'Nanjing', 'Shanghai', 'Shenzhen', 'Tianjin'],
-  'France': ['Bordeaux', 'Lille', 'Lyon', 'Marseille', 'Montpellier', 'Nantes', 'Nice', 'Toulouse'],
-  'Germany': ['Berlin', 'Cologne', 'Dortmund', 'Essen', 'Frankfurt', 'Leipzig', 'Munich', 'Stuttgart'],
-  'India': ['Bangalore', 'Delhi', 'Hyderabad', 'Jaipur'],
-  'Japan': ['Fukuoka', 'Kawasaki', 'Kobe', 'Nagoya', 'Osaka', 'Saitama', 'Sapporo', 'Tokyo', 'Yokohama'],
-  'UK': ['Birmingham', 'Bristol', 'Cardiff', 'Edinburgh', 'Liverpool', 'London', 'Manchester', 'Sheffield'],
-  'USA': ['Chicago', 'Dallas', 'Houston', 'Los Angeles', 'Philadelphia', 'San Jose']
-};
-const countries = Object.keys(locationMap);
-const prefixes = ['Global', 'Tech', 'Eco', 'Smart', 'Future', 'Cyber', 'Nano', 'Green', 'Data', 'Cloud'];
-const suffixes = ['Corp', 'Inc', 'Ltd', 'Group', 'Systems', 'Solutions', 'Logistics', 'Holdings'];
-
-const generateName = (level: number, index: number) => `${pick(prefixes)} ${pick(suffixes)} L${level}-${index}`;
-
-// --- 递归插入数据的核心逻辑 ---
-async function seedLevel(parentId: number, currentDepth: number, maxDepth: number) {
-  if (currentDepth > maxDepth) return;
-
-  const numChildren = randomInt(3, 6); 
-  for (let i = 1; i <= numChildren; i++) {
-    const country = pick(countries);
-    const city = pick(locationMap[country]);
-    const baseRevenue = 1000 / currentDepth; 
-    const revenueVal = randomInt(baseRevenue * 0.5, baseRevenue * 1.5) * 1000000; // 转换成真实的金额数字
-
-    // 1. 插入当前子节点
-    const newCompany = await prisma.company.create({
-      data: {
-        companyCode: generateCode(),
-        name: generateName(currentDepth, i),
-        level: currentDepth,
-        country: country,
-        city: city,
-        foundedYear: randomInt(1990, 2024),
-        annualRevenue: BigInt(Math.round(revenueVal)), // 注意：数据库是 BigInt，必须转换
-        employees: randomInt(50, 5000) * (4 - currentDepth),
-        parentId: parentId, // 👉 核心：关联父节点的 ID
-      }
-    });
-
-    // 2. 递归：如果还没到底层，继续以当前节点为父节点往下生成
-    if (currentDepth < maxDepth) {
-      await seedLevel(newCompany.id, currentDepth + 1, maxDepth);
-    }
-  }
+// 1. 定义 CSV 数据的类型接口，解决 "record 类型未知" 的报错
+interface CompanyCsvRecord {
+  company_code: string;
+  company_name: string;
+  level: string;
+  country: string;
+  city: string;
+  founded_year: string;
+  annual_revenue: string;
+  employees: string;
+  parent_company: string;
 }
 
-// --- 主执行函数 ---
 async function main() {
-  console.log('🧹 清理旧的公司数据...');
-  await prisma.company.deleteMany({});
+  console.log('🧹 开始清理旧的数据库数据...');
+  
+  await prisma.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 0;');
+  await prisma.$executeRawUnsafe('TRUNCATE TABLE companies;');
+  await prisma.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 1;');
+  console.log('✅ 旧数据清理完成！');
 
-  console.log('🌱 开始播种 Root 节点 (Level 1)...');
-  const roots = [
-    { name: "Alpha Holdings (L1)", country: "USA", city: "Chicago", year: 1995, rev: 5200000000, emp: 45000 },
-    { name: "Beta Logistics (L1)", country: "China", city: "Shanghai", year: 2008, rev: 3800000000, emp: 32000 },
-    { name: "Gamma Systems (L1)", country: "Germany", city: "Berlin", year: 2001, rev: 4500000000, emp: 28000 }
-  ];
+  console.log('📄 正在读取 CSV 文件...');
+  const csvFilePath = path.join(__dirname, 'companies_0110.csv');
+  const fileContent = fs.readFileSync(csvFilePath, 'utf-8');
+  
+  // 2. 将解析出来的数据断言为我们刚刚定义的 CompanyCsvRecord 数组类型
+  const records = parse(fileContent, {
+    columns: true,
+    skip_empty_lines: true,
+    trim: true,
+    bom: true,
+  }) as CompanyCsvRecord[];
 
-  for (const root of roots) {
-    const rootNode = await prisma.company.create({
+  // 排序
+  records.sort((a, b) => parseInt(a.level) - parseInt(b.level));
+
+  console.log(`🌱 开始导入真实数据，共 ${records.length} 条...`);
+  
+  const codeToIdMap = new Map<string, number>();
+
+  for (const record of records) {
+    const parentCode = record.parent_company;
+    
+    // 3. 显式声明类型为 number | null
+    let parentId: number | null = null;
+    
+    if (parentCode && codeToIdMap.has(parentCode)) {
+      // 4. Map.get() 返回的是 number | undefined
+      // 使用 ?? null 确保当它为 undefined 时 fallback 到 null，解决类型冲突报错
+      parentId = codeToIdMap.get(parentCode) ?? null;
+    }
+
+    const company = await prisma.company.create({
       data: {
-        companyCode: generateCode(),
-        name: root.name,
-        level: 1,
-        country: root.country,
-        city: root.city,
-        foundedYear: root.year,
-        annualRevenue: BigInt(root.rev),
-        employees: root.emp,
-        parentId: null // 顶层节点没有父节点
+        companyCode: record.company_code, 
+        name: record.company_name,
+        level: parseInt(record.level),
+        country: record.country || null,
+        city: record.city || null,
+        foundedYear: record.founded_year ? parseInt(record.founded_year) : null,
+        annualRevenue: record.annual_revenue ? BigInt(record.annual_revenue) : null,
+        employees: record.employees ? parseInt(record.employees) : null,
+        parentId: parentId, 
       }
     });
-    
-    console.log(`正在为 ${root.name} 生成子网络...`);
-    // 生成 Level 2 和 Level 3
-    await seedLevel(rootNode.id, 2, 3);
+
+    codeToIdMap.set(company.companyCode, company.id);
   }
-  
-  console.log('✅ 数据播种完成！所有层级关系已持久化到数据库。');
+
+  console.log('✅ 数据播种完成！所有真实公司数据及其层级关系已持久化到数据库。');
 }
 
 main()
   .catch(e => {
-    console.error(e);
+    console.error('❌ 导入过程中发生错误: ', e);
     process.exit(1);
   })
   .finally(async () => {
