@@ -1,6 +1,6 @@
 // backend/src/auth/auth.controller.ts
-import { Controller, Post, Get, Put, Body, Req, Res } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiCookieAuth } from '@nestjs/swagger';
+import { Controller, Post, Get, Put, Body, Req, Res, HttpCode, UnauthorizedException } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiCookieAuth, ApiResponse } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import type { Request, Response } from 'express'; // 👉 引入了 Response
 import { RegisterDto, LoginDto, CompleteFirstLoginDto, UpdateAccountDto } from './auth.dto';
@@ -8,7 +8,7 @@ import { RegisterDto, LoginDto, CompleteFirstLoginDto, UpdateAccountDto } from '
 @ApiTags('Auth 认证模块')
 @Controller('api/auth')
 export class AuthController {
-    constructor(private readonly authService: AuthService) {}
+    constructor(private readonly authService: AuthService) { }
 
     @ApiOperation({ summary: '用户注册' })
     @Post('register')
@@ -20,7 +20,7 @@ export class AuthController {
     @Post('login')
     async login(@Body() data: LoginDto, @Res({ passthrough: true }) res: Response) {
         const result = await this.authService.login(data);
-        
+
         // 如果登录成功，由后端向客户端种下 Cookie
         if (result.success && result.userId) {
             res.cookie('userId', result.userId.toString(), {
@@ -30,13 +30,24 @@ export class AuthController {
                 maxAge: 7 * 24 * 60 * 60 * 1000, // 有效期 7 天
             });
         }
-        
+
         return result;
     }
 
-    @ApiOperation({ summary: '用户登出 (清除 Cookie)' }) // 👉 新增：登出接口
+    @ApiOperation({ summary: '用户登出 (清除 Cookie)' })
     @Post('logout')
-    async logout(@Res({ passthrough: true }) res: Response) {
+    @HttpCode(200)
+    @ApiResponse({ status: 200, description: '成功登出并清除凭证' })
+    async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+        // 1. 先读取 Cookie
+        const userId = req.cookies['userId'];
+
+        // 2. 如果根本没带 Cookie (没登录)，直接抛出 401 异常，完美拦截非法请求！
+        if (!userId) {
+            throw new UnauthorizedException({ success: false, message: '未登录' });
+        }
+
+        // 3. 正常登出流程：清除 Cookie
         res.clearCookie('userId', { path: '/' });
         return { success: true, message: '登出成功' };
     }

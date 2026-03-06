@@ -1,5 +1,5 @@
 // backend/src/companies/companies.service.ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, Company } from '@prisma/client';
 import { CompanyQueryDto, CreateCompanyDto, UpdateCompanyDto, AnalyticsPayloadDto, ChartFiltersDto } from './companies.dto';
@@ -24,6 +24,24 @@ export interface TreeNode {
 export class CompaniesService {
     constructor(private prisma: PrismaService) { }
 
+    // 专用于拦截未登录用户的“读权限”校验器
+    private async checkLogin(userIdStr?: string) {
+        if (!userIdStr) {
+            throw new UnauthorizedException({ success: false, message: '未登录，禁止访问企业数据' });
+        }
+        const userId = parseInt(userIdStr, 10);
+        if (isNaN(userId)) {
+            throw new UnauthorizedException({ success: false, message: '无效的用户凭证' });
+        }
+
+        const user = await this.prisma.user.findUnique({ where: { id: userId } });
+        if (!user) {
+            throw new UnauthorizedException({ success: false, message: '用户不存在或凭证已失效' });
+        }
+        return { allowed: true, user };
+    }
+
+
     private async checkPermission(userIdStr?: string) {
         if (!userIdStr) return { allowed: false, error: '未登录' };
         const userId = parseInt(userIdStr, 10);
@@ -32,13 +50,18 @@ export class CompaniesService {
         const user = await this.prisma.user.findUnique({ where: { id: userId } });
         if (!user) return { allowed: false, error: '用户不存在' };
         if (user.role === 'User') return { allowed: false, error: '越权操作：需要 Manager 或 Admin 权限' };
-        
+
         return { allowed: true, user };
     }
 
-    async findAll(query: CompanyQueryDto) {
-        const page = query.page ? parseInt(query.page) : 1;
-        const pageSize = query.pageSize ? parseInt(query.pageSize) : 10;
+
+
+    async findAll(query: CompanyQueryDto, userIdStr?: string) {
+
+        await this.checkLogin(userIdStr); // 拦截未登录
+
+        const page = parseInt(query.page as string) || 1;
+        const pageSize = parseInt(query.pageSize as string) || 10;
         const search = query.search;
         const levels = query.levels ? query.levels.split(',').map(Number) : [];
 
@@ -66,7 +89,8 @@ export class CompaniesService {
         }
     }
 
-    async getLevels() {
+    async getLevels(userIdStr?: string) {
+        await this.checkLogin(userIdStr);
         try {
             const groups = await this.prisma.company.groupBy({ by: ['level'], orderBy: { level: 'asc' } });
             return { success: true, data: groups.map(g => g.level) };
@@ -76,61 +100,161 @@ export class CompaniesService {
     }
 
     async create(data: CreateCompanyDto, userIdStr?: string) {
+        // 1. 权限校验
         const auth = await this.checkPermission(userIdStr);
         if (!auth.allowed) return { success: false, message: auth.error };
 
+        const parsedLevel = typeof data.level === 'string' ? parseInt(data.level) : data.level;
+        const parsedParentId = data.parentId ? (typeof data.parentId === 'string' ? parseInt(data.parentId) : data.parentId) : null;
+
+        // 2. 核心防御：父节点有效性与 Level 层级强制校验
+        if (parsedParentId) {
+            const parentCompany = await this.prisma.company.findUnique({
+                where: { id: parsedParentId }
+            });
+
+            if (!parentCompany) {
+                return { success: false, message: '创建失败：关联的父公司(Parent ID)不存在' };
+            }
+            if (parsedLevel !== parentCompany.level + 1) {
+                return { success: false, message: `创建失败：层级逻辑错误！父节点层级为${parentCompany.level}，当前节点层级必须为${parentCompany.level + 1}` };
+            }
+        } else if (parsedLevel !== 1) {
+            // 如果没有父节点，它必须是顶层(Level 1)
+            return { success: false, message: '创建失败：非顶层公司必须关联一个父公司(Parent ID)' };
+        }
+
+        // 3. 数据库入库
         try {
             const newCompany = await this.prisma.company.create({
                 data: {
                     companyCode: data.companyCode,
                     name: data.name,
-                    level: typeof data.level === 'string' ? parseInt(data.level) : data.level,
+                    level: parsedLevel,
                     country: data.country,
                     city: data.city,
                     foundedYear: data.foundedYear ? (typeof data.foundedYear === 'string' ? parseInt(data.foundedYear) : data.foundedYear) : null,
                     annualRevenue: data.annualRevenue ? BigInt(data.annualRevenue) : null,
                     employees: data.employees ? (typeof data.employees === 'string' ? parseInt(data.employees) : data.employees) : null,
-                    parentId: data.parentId ? (typeof data.parentId === 'string' ? parseInt(data.parentId) : data.parentId) : null,
+                    parentId: parsedParentId,
                 }
             });
             return { success: true, data: { ...newCompany, annualRevenue: Number(newCompany.annualRevenue) } };
-        } catch (e) {
-            return { success: false, message: '创建失败，可能是公司代码(Code)重复' };
+
+        } catch (e: any) {
+            // 4. 精准错误捕获 (Prisma 的唯一约束冲突代号是 P2002)
+            if (e.code === 'P2002' && e.meta?.target?.includes('company_code')) {
+                return { success: false, message: `创建失败：公司识别码 ${data.companyCode} 已被使用` };
+            }
+            console.error("Create Company Error:", e);
+            return { success: false, message: '服务器内部错误，请检查输入数据' };
         }
     }
 
+    // --- 4. 更新公司 (带严格的父子层级防御逻辑) ---
     async update(id: number, data: UpdateCompanyDto, userIdStr?: string) {
+        // 1. 权限校验
         const auth = await this.checkPermission(userIdStr);
         if (!auth.allowed) return { success: false, message: auth.error };
 
         try {
+            // 获取当前公司信息
+            const currentCompany = await this.prisma.company.findUnique({ where: { id } });
+            if (!currentCompany) return { success: false, message: '更新失败：公司不存在' };
+
+            // 处理类型转换，如果前端没传该字段，则沿用当前数据库里的旧值
+            const newLevel = data.level !== undefined ? (typeof data.level === 'string' ? parseInt(data.level) : data.level) : currentCompany.level;
+            const newParentId = data.parentId !== undefined ? (data.parentId ? (typeof data.parentId === 'string' ? parseInt(data.parentId) : data.parentId) : null) : currentCompany.parentId;
+
+            // 严格校验最终的 Level 与 ParentId 关系 
+            if (newParentId) {
+                // 不能把自己设为自己的父节点
+                if (newParentId === id) return { success: false, message: '更新失败：公司不能作为自己的父公司' };
+
+                const parentCompany = await this.prisma.company.findUnique({ where: { id: newParentId } });
+                if (!parentCompany) return { success: false, message: '更新失败：关联的父公司(Parent ID)不存在' };
+
+                // 校验层级是否等于父级+1
+                if (newLevel !== parentCompany.level + 1) {
+                    return { success: false, message: `层级逻辑错误！父节点层级为${parentCompany.level}，当前节点层级必须为${parentCompany.level + 1}` };
+                }
+            } else if (newLevel !== 1) {
+                // 没有父节点的话，必须是顶层(Level 1)
+                return { success: false, message: '更新失败：非顶层公司必须关联一个父公司(Parent ID)' };
+            }
+
+            // 3. 准备更新数据
             const updateData: any = { ...data };
-            if (updateData.level !== undefined) updateData.level = typeof data.level === 'string' ? parseInt(data.level) : data.level;
-            if (updateData.foundedYear !== undefined) updateData.foundedYear = typeof data.foundedYear === 'string' ? parseInt(data.foundedYear) : data.foundedYear;
-            if (updateData.employees !== undefined) updateData.employees = typeof data.employees === 'string' ? parseInt(data.employees) : data.employees;
-            if (updateData.annualRevenue !== undefined) updateData.annualRevenue = BigInt(updateData.annualRevenue);
-            if (updateData.parentId !== undefined) updateData.parentId = data.parentId ? (typeof data.parentId === 'string' ? parseInt(data.parentId) : data.parentId) : null;
+            if (data.level !== undefined) updateData.level = newLevel;
+            if (data.parentId !== undefined) updateData.parentId = newParentId;
+            if (data.foundedYear !== undefined) updateData.foundedYear = data.foundedYear ? (typeof data.foundedYear === 'string' ? parseInt(data.foundedYear) : data.foundedYear) : null;
+            if (data.annualRevenue !== undefined) updateData.annualRevenue = data.annualRevenue ? BigInt(data.annualRevenue) : null;
+            if (data.employees !== undefined) updateData.employees = data.employees ? (typeof data.employees === 'string' ? parseInt(data.employees) : data.employees) : null;
 
-            const updated = await this.prisma.company.update({ where: { id }, data: updateData });
-            return { success: true, data: { ...updated, annualRevenue: Number(updated.annualRevenue) } };
-        } catch (e) {
-            return { success: false, message: '更新失败，请检查数据格式' };
+            // 4. 执行入库
+            const updatedCompany = await this.prisma.company.update({
+                where: { id },
+                data: updateData
+            });
+
+            return { success: true, data: { ...updatedCompany, annualRevenue: updatedCompany.annualRevenue ? Number(updatedCompany.annualRevenue) : null } };
+
+        } catch (e: any) {
+            if (e.code === 'P2002' && e.meta?.target?.includes('company_code')) {
+                return { success: false, message: `更新失败：公司识别码已被其他公司使用` };
+            }
+            console.error("Update Company Error:", e);
+            return { success: false, message: '服务器内部错误，请检查输入数据' };
         }
     }
 
+    // --- 5. 删除公司 (带级联防御逻辑) ---
     async remove(id: number, userIdStr?: string) {
+        // 1. 权限校验
         const auth = await this.checkPermission(userIdStr);
         if (!auth.allowed) return { success: false, message: auth.error };
 
         try {
-            await this.prisma.company.delete({ where: { id } });
+            // 2. 检查要删除的公司是否存在
+            const company = await this.prisma.company.findUnique({
+                where: { id }
+            });
+
+            if (!company) {
+                return { success: false, message: '删除失败：找不到该公司' };
+            }
+
+            // 核心防御：检查是否存在子节点 
+            const childrenCount = await this.prisma.company.count({
+                where: { parentId: id }
+            });
+
+            if (childrenCount > 0) {
+                return {
+                    success: false,
+                    message: `删除失败：该公司下还有 ${childrenCount} 个子节点。请先删除或转移其子公司。`
+                };
+            }
+
+            // 4. 安全执行删除
+            await this.prisma.company.delete({
+                where: { id }
+            });
+
             return { success: true, message: '删除成功' };
-        } catch (e) {
-            return { success: false, message: '删除失败！该公司可能存在关联的子节点。' };
+
+        } catch (error: any) {
+            console.error("Delete Company Error:", error);
+            // 兜底防御 Prisma 的外键约束报错 (P2003)
+            if (error.code === 'P2003') {
+                return { success: false, message: '删除失败：存在关联的子级数据约束' };
+            }
+            return { success: false, message: '服务器内部错误，删除失败' };
         }
     }
 
-    async getDashboardBasicStats() {
+    async getDashboardBasicStats(userIdStr?: string) {
+        await this.checkLogin(userIdStr); // 拦截未登录
         try {
             const [aggregateData, countryGroups] = await Promise.all([
                 this.prisma.company.aggregate({ _count: { id: true }, _sum: { annualRevenue: true, employees: true } }),
@@ -151,7 +275,8 @@ export class CompaniesService {
         }
     }
 
-    async getLevelStats() {
+    async getLevelStats(userIdStr?: string) {
+        await this.checkLogin(userIdStr); // 拦截未登录
         try {
             const levelStats = await this.prisma.company.groupBy({ by: ['level'], _count: { level: true }, orderBy: { level: 'asc' } });
             return { success: true, data: levelStats.map(stat => ({ level: stat.level, count: stat._count.level })) };
@@ -160,7 +285,8 @@ export class CompaniesService {
         }
     }
 
-    async getGrowthStats() {
+    async getGrowthStats(userIdStr?: string) {
+        await this.checkLogin(userIdStr); // 拦截未登录
         try {
             const companiesByYear = await this.prisma.company.groupBy({ by: ['foundedYear'], _count: { id: true }, where: { foundedYear: { not: null } }, orderBy: { foundedYear: 'asc' } });
             let cumulativeCount = 0;
@@ -174,7 +300,8 @@ export class CompaniesService {
         }
     }
 
-    async getFilterOptions() {
+    async getFilterOptions(userIdStr?: string) {
+        await this.checkLogin(userIdStr); // 拦截未登录
         try {
             const [levels, locations] = await Promise.all([
                 this.prisma.company.groupBy({ by: ['level'], orderBy: { level: 'asc' } }),
@@ -219,7 +346,7 @@ export class CompaniesService {
 
     private buildAndFilterTree(allCompanies: Company[], filters: ChartFiltersDto): TreeNode | null {
         const map = new Map<number, TreeNode>();
-        
+
         allCompanies.forEach(c => {
             map.set(c.id, {
                 id: c.id,
@@ -237,12 +364,12 @@ export class CompaniesService {
         });
 
         const root: TreeNode = { name: 'Global Supply Chain Network', level: 'Root', children: [] };
-        
+
         map.forEach(node => {
             if (node.parentId && map.has(node.parentId)) {
                 map.get(node.parentId)!.children!.push(node);
             } else {
-                root.children!.push(node); 
+                root.children!.push(node);
             }
         });
 
@@ -282,7 +409,8 @@ export class CompaniesService {
         return filterNode(root);
     }
 
-    async getAnalyticsData(payload: AnalyticsPayloadDto) {
+    async getAnalyticsData(payload: AnalyticsPayloadDto, userIdStr?: string) {
+        await this.checkLogin(userIdStr); // 拦截未登录
         try {
             const { dimension, filters } = payload;
             const where = this.buildWhere(filters);
@@ -291,7 +419,7 @@ export class CompaniesService {
             const grouped = await this.prisma.company.groupBy({
                 by: [groupByField], _count: { id: true }, where, orderBy: { _count: { id: 'desc' } }, take: 20
             });
-            
+
             const validResults = grouped.filter(item => item[groupByField] !== null);
             const barChart = {
                 labels: validResults.map(item => String(item[groupByField])),
